@@ -1,0 +1,260 @@
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+import re
+from keras.layers.embeddings import Embedding
+from tensorflow.keras.layers import Attention
+from tensorflow.keras.layers import RepeatVector
+import random
+
+
+
+### Downloading the Data ###
+
+fam_file = "informal_formal_family_relationships"
+ent_file = "informal_formal_data_entertainment"
+
+with open(fam_file, 'r') as f:
+    fam_data = f.read().splitlines()
+    
+with open(ent_file, 'r') as f:
+    ent_data = f.read().splitlines()
+
+data = fam_data + ent_data
+
+random.seed(42)
+random.shuffle(data)
+
+
+
+### Configuration ###
+
+batch_size = 64  # Batch size for training.
+epochs = 20  # Number of epochs to train for.
+latent_dim = 256  # Latent dimensionality of the encoding space. 
+num_samples = len(data)  # Number of samples to train on.
+
+
+
+### Preparing the data to be character level (sequence of integers) ###
+
+input_texts = []
+target_texts = []
+input_characters = set()
+target_characters = set()
+
+lines = data
+for line in lines[: min(num_samples, len(lines) - 1)]:
+    input_text, target_text, _ = line.split("\t")
+    # We use "tab" as the "start sequence" character
+    # for the targets, and "\n" as "end sequence" character.
+    target_text = "\t" + target_text + "\n"
+    input_texts.append(input_text)
+    target_texts.append(target_text)
+    for char in input_text:
+        if char not in input_characters:
+            input_characters.add(char)
+    for char in target_text:
+        if char not in target_characters:
+            target_characters.add(char)
+
+input_characters = sorted(list(input_characters))
+target_characters = sorted(list(target_characters))
+num_encoder_tokens = len(input_characters)
+num_decoder_tokens = len(target_characters)
+max_encoder_seq_length = max([len(txt) for txt in input_texts])
+max_decoder_seq_length = max([len(txt) for txt in target_texts])
+
+print("Number of samples:", len(input_texts))
+print("Number of unique input tokens:", num_encoder_tokens)
+print("Number of unique output tokens:", num_decoder_tokens)
+print("Max sequence length for inputs:", max_encoder_seq_length)
+print("Max sequence length for outputs:", max_decoder_seq_length)
+
+input_token_index = dict([(char, i) for i, char in enumerate(input_characters)])
+target_token_index = dict([(char, i) for i, char in enumerate(target_characters)])
+
+encoder_input_data = np.zeros(
+    (len(input_texts), max_encoder_seq_length), dtype="float32"
+)
+decoder_input_data = np.zeros(
+    (len(input_texts), max_decoder_seq_length), dtype="float32"
+)
+decoder_target_data = np.zeros(
+    (len(input_texts), max_decoder_seq_length), dtype="float32"
+)
+
+for i, (input_text, target_text) in enumerate(zip(input_texts, target_texts)):
+    for t, char in enumerate(input_text):
+        encoder_input_data[i, t] = input_token_index[char]
+    for t, char in enumerate(target_text):
+        # decoder_target_data is ahead of decoder_input_data by one timestep
+        decoder_input_data[i, t] = target_token_index[char]
+        if t > 0:
+            # decoder_target_data will be ahead by one timestep
+            # and will not include the start character.
+            decoder_target_data[i, t - 1] = target_token_index[char]
+            
+
+
+### Split Data on Train and Test Sets ###
+
+test_size = 100
+encoder_input_data_train = encoder_input_data[:-test_size]
+decoder_input_data_train = decoder_input_data[:-test_size]
+decoder_target_data_train = decoder_target_data[:-test_size]
+encoder_input_data_test = encoder_input_data[-test_size:]
+decoder_input_data_test = decoder_input_data[-test_size:]
+decoder_target_data_test = decoder_target_data[-test_size:]
+
+
+
+### Build Model ###
+
+# Define an input sequence and process it.
+encoder_inputs = keras.Input(shape=(max_encoder_seq_length, ))
+x = Embedding(num_encoder_tokens, latent_dim, mask_zero = True)(encoder_inputs)
+encoder = keras.layers.LSTM(latent_dim, return_state=True, activation='tanh')
+x, state_h, state_c = encoder(x)
+
+# We discard `encoder_outputs` and only keep the states.
+encoder_states = [state_h, state_c]
+
+# Set up the decoder, using `encoder_states` as initial state.
+decoder_inputs = keras.Input(shape=(max_decoder_seq_length, ))
+t = Embedding(num_decoder_tokens, latent_dim, mask_zero=True)(decoder_inputs)
+
+# We set up our decoder to return full output sequences,
+# and to return internal states as well. We don't use the
+# return states in the training model, but we will use them in inference.
+decoder_lstm = keras.layers.LSTM(latent_dim, return_sequences=True, return_state=True, activation='tanh')
+att_in = decoder_lstm(t, initial_state=encoder_states)
+attention = Attention(max_decoder_seq_length)(att_in)
+decoder_dense = keras.layers.Dense(num_decoder_tokens, activation="softmax")
+decoder_outputs = decoder_dense(attention)
+
+# Define the model that will turn
+# `encoder_input_data` & `decoder_input_data` into `decoder_target_data`
+model = keras.Model([encoder_inputs, decoder_inputs], decoder_outputs)
+
+
+
+### Train Model ###
+
+model.compile(
+    optimizer= keras.optimizers.Adam(), loss="sparse_categorical_crossentropy", metrics=["accuracy"]
+)
+
+model.fit(
+    [encoder_input_data_train, decoder_input_data_train],
+    decoder_target_data_train,
+    batch_size=batch_size,
+    epochs=epochs,
+    validation_split=0.2,
+)
+
+
+
+### Evaluating the accuracy of the model on the test set ###
+
+print("Evaluate on test data")
+results = model.evaluate([encoder_input_data_test, decoder_input_data_test],
+    decoder_target_data_test, batch_size=128)
+print("test loss, test acc:", results)
+
+
+
+
+### Run Inference ###
+
+# Define sampling models
+# Restore the model and construct the encoder and decoder.
+
+encoder_inputs = model.input[0]  # input_1
+encoder_outputs, state_h_enc, state_c_enc = model.layers[4].output  # lstm_1
+encoder_states = [state_h_enc, state_c_enc]
+encoder_model = keras.Model(encoder_inputs, encoder_states)
+
+decoder_inputs = model.input[1]  # input_2
+decoder_state_input_h = keras.Input(shape=(latent_dim,), name="input_3")
+decoder_state_input_c = keras.Input(shape=(latent_dim,), name="input_4")
+decoder_states_inputs = [decoder_state_input_h, decoder_state_input_c]
+
+embedding = model.layers[3] # embedding layer
+final_dex = embedding(decoder_inputs)
+
+decoder_lstm = model.layers[5]
+decoder_outputs2, state_h2, state_c2 = decoder_lstm(final_dex, initial_state=decoder_states_inputs)
+decoder_states2 = [state_h2, state_c2]
+
+decoder_dense = model.layers[6]
+decoder_outputs2 = decoder_dense(decoder_outputs2)
+
+decoder_model = keras.Model(
+    [decoder_inputs] + decoder_states_inputs,
+    [decoder_outputs2] + decoder_states2)
+
+
+# Reverse-lookup token index to decode sequences back to
+# something readable.
+reverse_input_char_index = dict((i, char) for char, i in input_token_index.items())
+reverse_target_char_index = dict((i, char) for char, i in target_token_index.items())
+
+
+def decode_sequence(input_seq):
+    # Encode the input as state vectors.
+    states_value = encoder_model.predict(input_seq)
+    # Generate empty target sequence of length 1.
+    target_seq = np.zeros((1,1))
+    # Populate the first character of target sequence with the start character.
+    target_seq[0, 0] = target_token_index['\t']
+
+    # Sampling loop for a batch of sequences
+    # (to simplify, here we assume a batch of size 1).
+    stop_condition = False
+    decoded_sentence = ''
+    while not stop_condition:
+        output_tokens, h, c = decoder_model.predict(
+            [target_seq] + states_value)
+
+        # Sample a token
+        # sampled_token_index = np.argmax(output_tokens[0, -1, :])
+        sampled_token_index = np.argmax(output_tokens[0, -1])
+        sampled_char = reverse_target_char_index[sampled_token_index]
+        decoded_sentence += sampled_char #' '+sampled_char
+
+        # Exit condition: either hit max length
+        # or find stop character.
+        if (sampled_char == '\n' or
+           len(decoded_sentence) > max_decoder_seq_length):
+            stop_condition = True
+
+        # Update the target sequence (of length 1).
+        target_seq = np.zeros((1,1))
+        target_seq[0, 0] = sampled_token_index
+
+        # Update states
+        states_value = [h, c]
+
+    return decoded_sentence
+
+
+
+
+### Generate Decoded Sentences ###
+
+# see how the model decodes sentences from the training set
+for seq_index in range(10):
+    input_seq = encoder_input_data_train[seq_index : seq_index + 1]
+    decoded_sentence = decode_sequence(input_seq)
+    print("-")
+    print("Input sentence:", input_texts[seq_index])
+    print("Decoded sentence:", decoded_sentence)
+
+# see how the model decodes sentences from the testing set
+for seq_index in range(10):
+    input_seq = encoder_input_data_test[seq_index : seq_index + 1]
+    decoded_sentence = decode_sequence(input_seq)
+    print("-")
+    print("Input sentence:", input_texts[-100+seq_index])
+    print("Decoded sentence:", decoded_sentence)

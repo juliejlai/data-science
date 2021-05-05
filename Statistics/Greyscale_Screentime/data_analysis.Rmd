@@ -1,0 +1,509 @@
+---
+title: "Data Exploration, ITT, CACE, and CACE with IVY"
+output: pdf_document
+---
+# w241 Final Project: Clean Data and Basic Analysis
+
+```{r}
+library('data.table')
+library('readr')
+library('ggplot2')
+library('readxl')
+library('tidyverse')
+library('sandwich')
+library('lmtest')
+library("ivreg")
+library("stargazer")
+robust_se <- function(mod, type = 'HC3') { 
+  sqrt(diag(vcovHC(mod, type)))
+  }
+```
+
+## Read in data
+
+```{r}
+# read in data files
+treatment_initial <- read_excel('groupA_initial.xlsx')
+control_initial <- read_excel("groupB_initial.xlsx")
+treatment_final <- read_excel('groupA_final.xlsx')
+control_final <- read_excel("groupB_final.xlsx")
+
+```
+
+
+
+## Cleaning data
+```{r}
+# dropping and renaming columns
+
+clean_initial_data <- function(data, treatment = FALSE) {
+  
+  # dropping first, extra row
+  names(data) <- as.matrix(data[1, ])
+  data <- data[-1, ]
+  data[] <- lapply(data, function(x) type.convert(as.character(x)))
+  
+  # dropping and renaming columns for CONTROL GROUP
+  if (treatment == FALSE) {
+    data <- data[,-c(1:2)]
+    data <- data[,-c(10:19)]
+    data <- data[,-c(11)]
+    data <- data.table(data)
+    new <- c('date', 'first_name', 'last_name', 'age', 'country', 'social_apps', 'iphone', 'screen_time_rep', 'screen_time_on', 'screen_time_avg_initial')
+    setnames(data,colnames(data),new)}
+  
+  # dropping and renaming columns for TREATMENT GROUP
+  else {
+    # dropping columns
+    data <- data[,-c(1:7)]
+    data<- data[,-c(2:10)]
+    data <- data[,-c(10:19)]
+    data <- data[,-c(12)]
+    data <- data.table(data)
+    new <- c('date', 'first_name', 'last_name', 'age', 'country', 'social_apps', 'iphone', 'greyscale', 'screen_time_rep', 'screen_time_on', 'screen_time_avg_initial')
+    setnames(data,colnames(data),new)
+  }
+  
+  # get rid of rows with empty values for name (indicates a faulty response)
+  complete_vec <- complete.cases(data[, 'first_name'])
+  data <- data[complete_vec,]
+  
+  # standardizing 'United States' label
+  data$country <- ifelse((data$country == 'Mexico')|(data$country == 'MX')|(data$country == 'Mx')|(data$country == 'mexico')|(data$country == 'México'),             'Mexico', 'United States' )
+  
+  
+  # convert date to readable type
+  data$date <- as.Date(data$date, origin = "1899-12-30")
+  
+  # create a variable to indicate which group (first cohort or second) based on date
+  data[,first_group := ifelse(as.numeric(as.Date(data$date, origin = "1899-12-30") < "2021-03-23"), 1, 0)]
+  
+  
+  return(data)
+}
+```
+
+```{r}
+# dropping and renaming columns 
+
+clean_final_data <- function(data, treatment = FALSE) {
+  
+  # dropping first, extra row
+  names(data) <- as.matrix(data[1, ])
+  data <- data[-1, ]
+  data[] <- lapply(data, function(x) type.convert(as.character(x)))
+  
+  # dropping columns
+  data <- data[,-c(1:7)]
+  data <- data[,-c(2:10)]
+  data <-data[,-c(5:28)]
+  
+  # dropping and renaming columns for CONTROL GROUP
+  if (treatment == FALSE) {
+    data <- data[,-c(8)]
+    data <- data.table(data)
+    new <- c('date', 'first_name', 'last_name', 'iphone', 'screen_time_1', 'screen_time_2', 'screen_time_3')
+    setnames(data,colnames(data),new)}
+  
+  # dropping and renaming columns for TREATMENT GROUP
+  else {
+    # dropping columns
+    data <- data.table(data)
+    new <- c('date', 'first_name', 'last_name', 'iphone', 'screen_time_1', 'screen_time_2', 'screen_time_3')
+    setnames(data,colnames(data),new)
+  }
+  
+  # get rid of rows with empty values for name (indicates a faulty response)
+  complete_vec <- complete.cases(data[, 'first_name'])
+  data <- data[complete_vec,]
+  
+  # averages screen time 
+  data[, screen_time_avg_final := (rowMeans(data[,c('screen_time_1', 'screen_time_2', 'screen_time_3')]))]
+  
+  # convert date to readable type
+  data[, date := as.Date(date, origin = "1899-12-30")]
+  #data$date <- as.Date(data$date, origin = "1899-12-30")
+  
+  # create a variable to indicate which group (first cohort or second) based on date
+  
+  #data[, group_no := ifelse(date > as.Date("2021-03-23", origin = "1899-12-30"), 1, 0)]
+  data[,first_group := ifelse(as.Date(data$date, origin = "1899-12-30") < "2021-03-26", 1,0 )]
+  #data[, first_group_binary := first_group]
+  
+  #data[is.na(first_group_binary), first_group_binary:=0]
+  
+  return(data)
+}
+```
+
+
+```{r}
+treatment_initial <- clean_initial_data(treatment_initial, treatment = TRUE)
+control_initial <- clean_initial_data(control_initial, treatment = FALSE)
+treatment_final <- clean_final_data(treatment_final, treatment = TRUE)
+control_final <- clean_final_data(control_final, treatment = FALSE)
+head(treatment_final)
+```
+
+
+
+
+
+```{r}
+# getting rid of rows in final that don't exist in the initial (calling these faulty responses)
+# joining initial and final datasets for both treatment and control groups
+
+treatment_final <- treatment_final[ treatment_final$first_name %in% treatment_initial$first_name, ]
+control_final <- control_final[ control_final$first_name %in% control_initial$first_name, ]
+treatment <- merge(treatment_initial, treatment_final[,c('first_name','screen_time_avg_final')], by.x = "first_name", by.y = "first_name", all.x = TRUE, all.y = FALSE)
+control <- merge(control_initial, control_final[,c('first_name','screen_time_avg_final')], by.x = "first_name", by.y = "first_name", all.x = TRUE, all.y = FALSE)
+
+```
+
+
+```{r}
+# replacing NA with zero for groups
+treatment[treatment == 0] <- NA
+control[control == 0] <- NA
+
+# creating treatment column
+treatment$treatment <- 1
+control$treatment <- 0
+
+# binding treatment and control data into one dataframe
+data <- rbind(treatment,control, fill=TRUE)
+
+# drop people who have NA values for both screen_time_avg_final and screen_time_avg_initial
+# issue with qualtrics for not getting their data for some reason
+data <- data[!with(data,is.na(screen_time_avg_initial)& is.na(screen_time_avg_final)),]
+
+```
+
+```{r}
+#Replace NA with zero for individuals in second group
+data[is.na(first_group), first_group := 0]
+```
+
+
+## Plot histograms of cleaned data
+
+```{r}
+ggplot(data, aes(`screen_time_avg_initial`, fill = factor(treatment))) + geom_histogram(alpha = 0.2, position = 'dodge') + labs(title="Baseline Screen Time Averages")
+```
+
+```{r}
+ggplot(data, aes(`screen_time_avg_final`, fill = factor(treatment))) + geom_histogram(alpha = 0.2, position = 'dodge') + labs(title="Final Screen Time Averages")
+```
+
+
+```{r}
+# replace na values in baseline (screen_time_avg_initial) with average of that column
+# this is okay because we want an average baseline of where people are
+# we don't want to do this with screen_time_avg_final because of attrition (we want to know which people didn't come back)
+# we do this separately for treatment and control group
+data$screen_time_avg_initial[is.na(data$screen_time_avg_initial) & data$treatment == 1] <- mean(treatment$screen_time_avg_initial,na.rm=TRUE)
+
+data$screen_time_avg_initial[is.na(data$screen_time_avg_initial) & data$treatment == 0] <- mean(control$screen_time_avg_initial,na.rm=TRUE)
+
+# getting the difference between final and initial screen times
+data[, diff := screen_time_avg_final - screen_time_avg_initial]
+```
+
+
+```{r}
+# compare individuals' initial and final averages
+ggplot(data, aes(`diff`, fill = factor(treatment))) + geom_histogram(alpha = 0.2, position = 'dodge') + labs(title="Screen Time Average Difference")
+```
+
+
+```{r}
+library("ggpubr")#screen_time_avg_final - screen_time_avg_initial
+before <- data[, screen_time_avg_initial]
+after <- data[, screen_time_avg_final ]
+paired_data <- data.frame( 
+                group = rep(c("before", "after"), each = 30),
+                weight = c(before,  after)
+                )
+
+ggboxplot(paired_data, x = "group", y = "weight", 
+          color = "group", palette = c("#00AFBB", "#E7B800"),
+          order = c("before", "after"),
+          ylab = "Weight", xlab = "Groups")
+
+```
+
+
+## Estimating ATE, ITT, and CACE ignoring attrition
+
+**A quick review:** The Average Treatment Effect (ATE) measures the effect of treatment on randomly selected person. Intent-to-Treat (ITT) measures the effect of being made eligible for treatment, regardless of the fraction of the treatment group that's actually treated. The Complier Average Causal Effect (CACE) is the average treatment effect of compliers. It can also be defined as ITT/ITT_D, where ITT_D is the difference between the proportion of subjects who are treated in the event that they are assigned to the treatment group and the proportion who would be treated even if they had been assigned to the control group.
+
+
+### Using paired T-test
+
+```{r}
+#paired t test
+#data[, screen_time_difference := screen_time_avg_final - screen_time_avg_initial]
+#before <- data[, screen_time_avg_initial]
+#after <- data[, screen_time_avg_final ]
+t_test <- t.test(before, after, paired = T)
+t_test
+
+```
+
+
+
+```{r}
+# making greyscale (receiving treatment) and iphone variables binary for analysis
+data[, country_binary := ifelse(country == "Mexico", 1, 0)]
+data[, greyscale_binary := ifelse(greyscale =='Yes', 1, 0)]
+data[is.na(greyscale_binary), greyscale_binary:=0]
+# makes iphone column binary (iphone = 1, android = 0)
+data$iphone <- as.numeric(data$iphone == 'IPhone')
+```
+
+```{r}
+# estimating average treatment effect
+ate <- data[, lm(screen_time_avg_final~ treatment + screen_time_avg_initial + country_binary + iphone + first_group)]
+ate$vcovHC_ <- vcovHC(ate)
+coeftest(ate, vcov. = ate$vcovHC_)
+```
+
+This analysis regresses final average screen time (`screen_time_avg_final`) on treatment assignment (`treatment`), while controlling for initial average screen time (`screen_time_avg_initial`), country, and phone. Results suggest that the average treatment effect is -0.00033505 with a 95% confidence interval of +/- 1.272597 and that there is not a statistically significant treatment effect on final average screen time.
+
+
+```{r}
+# estimating the ITT
+
+itt <- data[, lm(screen_time_avg_final ~ treatment)]
+itt$vcovHC_ <- vcovHC(itt)
+coeftest(itt, vcov. = itt$vcovHC_)
+
+```
+
+In this analysis, the final average screen time (`screen_time_avg_final`) is regressed on treatment assignment (`treatment`). Screen time is a continuous variable in units of hours and treatment assignment (`treatment`) is scored 1 if the subject was assigned to the treatment group and 0 otherwise. The ITT is 0.042928 with a 95% confidence interval of 1.730606. This result is not statistically significant.
+
+```{r}
+# using ivyreg to calculate CACE
+cace <- data[, ivreg(screen_time_avg_final ~ greyscale_binary, ~treatment)]
+cace$vcovHC_ <- vcovHC(cace)
+coeftest(cace, vcov. = cace$vcovHC_)
+
+```
+
+In this instrumental variables regression model, the final average screen time (`screen_time_avg_final`) is regressed on actual treatment (`greyscale_binary`) using treatment assignment(`treatment`) as an instrument. The results suggest that turning on greyscale increased screentime usage among Compliers by 4.7% with a 95% confidence interval of 1.89498. However, the results suggest that this effect is not statistically insignificant. 
+
+### Comparing different models
+
+```{r}
+mod1 <- data[,lm(screen_time_avg_final ~ treatment)]
+mod2 <- data[,lm(screen_time_avg_final ~ treatment + screen_time_avg_initial)]
+mod3 <- data[,lm(screen_time_avg_final ~ treatment + screen_time_avg_initial + country_binary)]
+mod4 <- ate
+mod5 <- data[,lm(screen_time_avg_final ~ treatment + screen_time_avg_initial + country_binary + first_group)]
+model_anova1 <- anova(mod1,mod4, test = "F")
+model_anova1
+model_anova2 <- anova(mod1,mod5, test = "F")
+
+model_anova3 <- anova(mod4,mod5, test = "F")
+model_anova3
+```
+
+The increased information from the added covariates does improve the performance of the causal model. The F-test indicates that the inclusion of these covariates changes the standard errors of the estimates a statistically significant amount. Without the block fixed effects, the estimate has greater variance. The anova test has a p-value of 0.0001938 which suggests that there is a statistically significant difference in the different treatment effects for the added covariates. However, the addition of the study date for the two study groups does not appear to have any effect. We thought that the study date, in particular days of the week, would be more indicative of screen time.
+
+
+
+## Estimating ATE, ITT, and CACE taking into account Attrition with Extreme Error Bounds
+
+In this section, we take into account Attrition using Extreme Error Bounds.
+
+### Minimum bound
+
+We assume that all of the data we did not observe was actually a very small value (the minimum value).
+
+```{r}
+min <- data[, min(screen_time_avg_final, na.rm = TRUE)]
+data[, low_screen_time := screen_time_avg_final]
+data[is.na(low_screen_time), low_screen_time := min]
+```
+
+```{r}
+# estimating average treatment effect
+ate_min <- data[, lm(low_screen_time ~ treatment + screen_time_avg_initial + country_binary + iphone)]
+ate_min$vcovHC_ <- vcovHC(ate_min)
+coeftest(ate_min, vcov. = ate_min$vcovHC_)
+```
+
+This analysis regresses final average screen time, bounded by the extreme minimum,  (`low_screen_time`) on treatment assignment (`treatment`), while controlling for initial average screen time (`screen_time_avg_initial`), country, and phone. Results suggest that the treatment effect is 0.95687 with a 95% confidence interval of 1.23602 and that there is not a statistically significant treatment effect on final average screen time.
+
+```{r}
+# estimating the ITT
+
+itt_min <- data[, lm(low_screen_time ~ treatment)]
+itt_min$vcovHC_ <- vcovHC(itt_min)
+coeftest(itt_min, vcov. = itt_min$vcovHC_)
+```
+
+In this analysis, the final average screen time, bounded by the extreme minimum, (`low_screen_time`) is regressed on treatment assignment (`treatment`). Screen time is a continuous variable in units of hours and treatment assignment (`treatment`) is scored 1 if the subject was assigned to the treatment group and 0 otherwise. The ITT is 1.03392 with a 95% confidence interval of 1.37848. This result is not statistically significant.
+
+
+```{r}
+# using ivyreg to calculate CACE
+ivyreg_min <- data[, ivreg(low_screen_time ~ greyscale_binary, ~treatment)]
+ivyreg_min$vcovHC_ <- vcovHC(ivyreg_min)
+coeftest(ivyreg_min, vcov. = ivyreg_min$vcovHC_)
+```
+
+In this instrumental variables regression model, the final average screen time, bounded by the extreme minimum, (`low_screen_time`) is regressed on actual treatment (`greyscale_binary`) using treatment assignment(`treatment`) as an instrument. The results suggest that turning on greyscale increased screentime usage among Compliers by 115.32% with a 95% confidence interval of 1.52946. However, the results suggest that this effect is not statistically insignificant. Moreover, it illustrates that the estimate of the ATE lacks precision.
+
+### Maximum bound
+
+We assume that all the data that we did not observe was actually a very high value (the maximum value)
+
+```{r}
+max <- data[, max(screen_time_avg_final, na.rm = TRUE)]
+data[, high_screen_time := screen_time_avg_final]
+data[is.na(high_screen_time), high_screen_time := max]
+```
+
+```{r}
+# estimating average treatment effect
+ate_max <- data[, lm(high_screen_time ~ treatment + screen_time_avg_initial + country_binary + iphone)]
+ate_max$vcovHC_ <- vcovHC(ate_max)
+coeftest(ate_max, vcov. = ate_max$vcovHC_)
+```
+
+
+This analysis regresses final average screen time, bounded by the extreme maximum,  (`high_screen_time`) on treatment assignment (`treatment`), while controlling for initial average screen time (`screen_time_avg_initial`), country, and phone. Results suggest that the treatment effect is -1.58117 with a 95% confidence interval of 1.85502 and that there is a slightly statistically significant treatment effect on final average screen time.
+
+```{r}
+# estimating the ITT
+
+itt_max <- data[, lm(high_screen_time ~ treatment)]
+itt_max$vcovHC_ <- vcovHC(itt_max)
+coeftest(itt_max, vcov. = itt_max$vcovHC_)
+```
+
+In this analysis, the final average screen time, bounded by the extreme maximum, (`high_screen_time`) is regressed on treatment assignment (`treatment`). Screen time is a continuous variable in units of hours and treatment assignment (`treatment`) is scored 1 if the subject was assigned to the treatment group and 0 otherwise. The ITT is -1.57130 with a 95% confidence interval of 1.75706. This result is slightly statistically significant.
+
+```{r}
+# using ivyreg to calculate CACE
+ivyreg_max <- data[, ivreg(high_screen_time ~ greyscale_binary, ~treatment)]
+ivyreg_max$vcovHC_ <- vcovHC(ivyreg_max)
+coeftest(ivyreg_max, vcov. = ivyreg_max$vcovHC_)
+```
+
+In this instrumental variables regression model, the final average screen time, bounded by the extreme maximum, (`high_screen_time`) is regressed on actual treatment (`greyscale_binary`) using treatment assignment(`treatment`) as an instrument. The results suggest that turning on greyscale increased screentime usage among Compliers by -175.26% with a 95% confidence interval of 1.9713. However, the results suggest that this effect is slightly statistically insignificant.
+
+### Mean bound
+
+We assume that all of the data that we did not observe was actually the average value. 
+
+```{r}
+mean <- data[ , mean(screen_time_avg_final, na.rm = TRUE)]
+
+data[ , mean_screen_time := screen_time_avg_final]
+data[is.na(mean_screen_time), mean_screen_time := mean]
+ate_mean <- data[, lm(mean_screen_time ~ treatment + screen_time_avg_initial + country_binary + iphone)]
+ate_mean$vcovHC_ <- vcovHC(ate_mean)
+coeftest(ate_mean, vcov. = ate_mean$vcovHC_)
+```
+
+This analysis regresses final average screen time, bounded by the mean,  (`mean_screen_time`) on treatment assignment (`treatment`), while controlling for initial average screen time (`screen_time_avg_initial`), country, and phone. Results suggest that the treatment effect is -0.024055 with a 95% confidence interval of 0.884826 and that there is not a statistically significant treatment effect on final average screen time.
+
+```{r}
+# estimating the ITT
+
+itt_mean <- data[, lm(mean_screen_time ~ treatment)]
+itt_mean$vcovHC_ <- vcovHC(itt_mean)
+coeftest(itt_mean, vcov. = itt_mean$vcovHC_)
+```
+
+In this analysis, the final average screen time, bounded by the mean, (`mean_screen_time`) is regressed on treatment assignment (`treatment`). Screen time is a continuous variable in units of hours and treatment assignment (`treatment`) is scored 1 if the subject was assigned to the treatment group and 0 otherwise. The ITT is 0.027034 with a 95% confidence interval of 1.061992. This result is not statistically significant.
+
+
+```{r}
+# using ivyreg to calculate CACE
+ivyreg_mean <- data[, ivreg(mean_screen_time ~ greyscale_binary, ~treatment)]
+ivyreg_mean$vcovHC_ <- vcovHC(ivyreg_mean)
+coeftest(ivyreg_mean, vcov. = ivyreg_mean$vcovHC_)
+```
+
+In this instrumental variables regression model, the final average screen time, bounded by the mean, (`mean_screen_time`) is regressed on actual treatment (`greyscale_binary`) using treatment assignment(`treatment`) as an instrument. The results suggest that turning on greyscale increased screentime usage among Compliers by 3.0153% with a 95% confidence interval of 1.184236. However, the results suggest that this effect is not statistically insignificant.
+
+## Table of extreme value bands
+```{r}
+stargazer(
+  ate, 
+  ate_min, 
+  ate_max,
+  ate_mean,
+  type = 'text',
+  se = list(
+    robust_se(ate), 
+    robust_se(ate_min),
+    robust_se(ate_max),
+    robust_se(ate_mean)
+  ), 
+  omit.stat = c('ser', 'F')
+)
+```
+
+Using Extreme Error Bounds to account for those who attrited, we see that the treatment effect can range anywhere between -1.581 to 0.957.
+
+
+# Lets look at power. 
+```{r}
+power_test_t <- function(
+  mean_control = 5.168588, 
+  mean_treat = 4.934875, 
+  sd_control = 2.848298, 
+  sd_treat = 3.253208,
+  number_per_condition = 50, 
+  power_loops = 100, 
+  ri_loops = 100, 
+  verbose = TRUE) { 
+    p_values <- NA   
+    ri <- NA 
+    d <- data.table()
+  
+    d[ , condition := rep(c('control', 'treatment'), each = number_per_condition)]  
+  
+    for(power_loop in 1:power_loops) { 
+      if(verbose == TRUE) {
+        if(power_loop %% 10 == 0) {
+          cat(sprintf('Loop Number: %.0f\n', power_loop))
+        }
+      } 
+      
+      # d[condition == 'control',   Y := rnorm(.N, mean = mean_control, sd = sd_control)]
+      # d[condition == 'treatment', Y := rnorm(.N, mean = mean_treat, sd = sd_treat)]
+      # 
+      # ate <- d[ , mean(Y), keyby = condition][ , diff(V1)]
+      # 
+      # for(ri_loop in 1:ri_loops) { 
+      #   ri[ri_loop] <- d[ , mean(Y), keyby = sample(condition)][ , diff(V1)]
+      #   }
+      # 
+      # p_values[power_loop] <- mean(abs(ri) > abs(ate))
+      
+      p_values[power_loop] <- t.test(
+        x = rnorm(number_per_condition, mean = mean_control, sd = sd_control), 
+        y = rnorm(number_per_condition, mean = mean_treat, sd = sd_treat)
+      )$p.value
+    }
+      
+    return(list(
+      'p_values' = p_values, 
+      'power' = mean(p_values < 0.05)
+      ))
+}
+```
+
+```{r}
+power_test_t()$power
+```
+
+
+
+
+
