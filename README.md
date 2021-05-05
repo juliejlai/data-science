@@ -12,14 +12,17 @@ Univeristy of California, Berkeley
 
 Coursework in Progress:
 
-* Data Visualization
-* Causal Inference
-* Natural Language Processing
+* Behind the Data: Humans and Values
+* Capstone
 
 Coursework Completed:
 
-* Python Programming for Data Science
-* Statistics
-* Experiment Design
+* Natural Language Processing with Deep Learning
+* Causal Inference
+* Data Visualization
 * Data Engineering
 * Machine Learning
+* Statistics
+* Experiment Design
+* Python Programming for Data Science
+
