@@ -19,7 +19,7 @@ Coursework Completed:
 
 * Natural Language Processing with Deep Learning
 * Causal Inference
-* Data Visualization
+* Data Visualization <a href="https://spotify-visualizations.vercel.app/">(Spotify Visualizations Website)</a>
 * Data Engineering
 * Machine Learning
 * Statistics
