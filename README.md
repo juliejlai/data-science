@@ -13,7 +13,7 @@ Univeristy of California, Berkeley
 Coursework in Progress:
 
 * Behind the Data: Humans and Values
-* Capstone
+* Capstone <a href="https://dfaj-fm.herokuapp.com/">(Spotify Recommender and Visualizer Website)</a>
 
 Coursework Completed:
 
