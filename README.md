@@ -1,4 +1,4 @@
-# Data Science Portfolio <a href="https://www.datascienceportfol.io/juliejlai">(Portfolio Website)</a>
+# Data Science Portfolio <a href="https://www.datascienceportfol.io/juliejlai">(Website)</a>
 
 Julie Lai
 
